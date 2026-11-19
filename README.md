@@ -6,23 +6,34 @@ The first experiment estimates **0, 1 or 2 people in one bedroom** using a 2.4 G
 
 Place the router and receiver on different sides of the occupied area. Mark their positions, heights and antenna orientations. Fix the router's 2.4 GHz channel and select 20 MHz bandwidth. The ESP32 pings the gateway every 100 ms and captures CSI from received frames whose source matches the associated AP. Other AP traffic can contribute frames. The nominal ping rate and actual CSI rate are different quantities. [Espressif router capture example](https://github.com/espressif/esp-csi/tree/master/examples/get-started/csi_recv_router)
 
-Use the tracked sketch at `firmware/esp32_csi_receiver/esp32_csi_receiver.ino`. In Arduino IDE select **ESP32 Dev Module** for a generic classic ESP32 development board, Espressif Arduino core **2.0.17**, and tzapu **WiFiManager 2.0.17**. Upload over USB. On first boot, connect to the setup AP named in the sketch and enter the credentials for your router. Close Serial Monitor before opening the Python logger. A working receiver prints its AP channel, starts gateway pings and emits lines beginning with `CSI,` followed by a numeric sequence. A printed format legend alone means no packets have been verified.
+The native ESP-IDF 5.5.2 project is in `firmware/esp32_csi_idf`. It targets the original ESP32. From an active ESP-IDF PowerShell, use the USB port shown for your board. On the development laptop the installed EIM activation script and current port are shown below.
 
-Run these PowerShell commands from the Git checkout.
+```powershell
+. 'C:\Espressif\tools\Microsoft.30aaf64.PowerShell_profile.ps1'
+cd 'E:\Wifi CSI\WiFi-CSI\firmware\esp32_csi_idf'
+idf.py build
+idf.py -p COM13 flash
+```
+
+The receiver uses its saved station credentials on boot. To set or replace them, run the helper below from the Git checkout. The password is entered privately over local USB and stored by the ESP-IDF Wi-Fi driver in board NVS. Close `idf.py monitor` (Ctrl+]) and the logger before opening the port in another program.
 
 ```powershell
 cd 'E:\Wifi CSI\WiFi-CSI'
+# On a fresh checkout, create the Python environment once.
 py -3.12 -m venv .venv
 .\.venv\Scripts\python -m pip install -r requirements.txt
-.\.venv\Scripts\python -m serial.tools.list_ports
+.\.venv\Scripts\python -m serial.tools.list_ports -v
+.\.venv\Scripts\python -m src.data_collection.configure_wifi --port COM13
 ```
+
+A successful join reports `wifi=ready`. Check for an increasing frame count or a nonzero packet rate in the logger. `START` and `STOP` control CSI output. `STATUS` reports connection state, frames and queue drops. CSI uses the same signed-byte CSV format as the Arduino version.
 
 ## 02 · Record independent sessions
 
-Replace `COM4` with your port. This example gives you 20 seconds after the first valid packet to leave the room, then measures for 90 seconds and stops automatically. The raw file includes the settling period. The labeled dataset starts afterward. Use a longer delay if leaving and closing the door takes longer.
+Replace `COM13` with your port. This example gives you 20 seconds after the first valid packet to leave the room, then measures for 90 seconds and stops automatically. The raw file includes the settling period. The labeled dataset starts afterward. Use a longer delay if leaving and closing the door takes longer.
 
 ```powershell
-.\.venv\Scripts\python -m src.data_collection.serial_capture --port COM4 --count 0 --activity empty --block day01 --settle 20 --seconds 90
+.\.venv\Scripts\python -m src.data_collection.serial_capture --port COM13 --count 0 --activity empty --block day01 --settle 20 --seconds 90
 ```
 
 For one person set `--count 1 --activity seated-still`. For two, try `--count 2 --activity one-seated-one-walking`. `--notes` records room layout, position, anonymous participant codes or anything unusual. Omit `--count` for an unlabeled recording. One person can start the timer and step out for an empty trial. Keep everyone in position until the timer ends. If someone enters early, discard that session from training by setting its manifest count to JSON `null`. The laptop displays measurements or predictions. The people conducting the trial supply the labels.
@@ -65,7 +76,7 @@ Choose the held-out day **before** inspecting its results. Collect all three cou
 
 ```powershell
 .\.venv\Scripts\python -m src.train_baseline --test-block day03 --out models/bedroom-v1
-.\.venv\Scripts\python -m src.data_collection.serial_capture --port COM4 --model models/bedroom-v1/forest.joblib
+.\.venv\Scripts\python -m src.data_collection.serial_capture --port COM13 --model models/bedroom-v1/forest.joblib
 ```
 
 The trainer compares a majority guess, an RSSI-only forest and a six-feature random forest on identical windows. It writes `metrics.json`, `held_out_predictions.csv` and `forest.joblib`. Review the 0/1/2 confusion matrix, exact accuracy, macro-F1, mean absolute count error, empty-room false positives and occupied recall. Inspect errors by activity and by session. Count windows from the same trial as correlated observations. A classifier trained on 0/1/2 can return only those counts. Three occupants require a new labeled experiment.

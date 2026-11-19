@@ -1,0 +1,2 @@
+idf_component_register(SRCS "receiver.c" INCLUDE_DIRS "." PRIV_REQUIRES
+                       esp_wifi esp_netif esp_event nvs_flash lwip esp_driver_uart esp_timer)
