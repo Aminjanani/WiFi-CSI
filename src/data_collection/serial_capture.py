@@ -20,7 +20,7 @@ def forward_commands(port):
     try:
         while True:
             command = input().strip().upper()
-            if command in {"START", "STOP", "STATUS"}:
+            if command in {"START", "STOP", "STATUS", "SCAN"}:
                 port.write((command + "\n").encode("ascii"))
     except (EOFError, OSError, serial.SerialException):
         return
@@ -129,7 +129,7 @@ def main():
     try:
         with serial.Serial(args.port, args.baud, timeout=0.25) as port:
             directory.mkdir(parents=True, exist_ok=False)
-            print(f"Saving to {directory}. START, STOP and STATUS go to the receiver. Ctrl+C ends the recording.")
+            print(f"Saving to {directory}. Commands: START, STOP, STATUS, SCAN. Ctrl+C ends the recording.")
             threading.Thread(target=forward_commands, args=(port,), daemon=True).start()
             capture(port, directory, args, model)
     except serial.SerialException as error:

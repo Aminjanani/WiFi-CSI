@@ -113,4 +113,4 @@ class Windows:
 
 def breaks_stream(line):
     return line.startswith(("Wi-Fi lost.", "CSI capture STOPPED.", "ESP32 Router-based",
-                            "Connected AP BSSID:"))
+                            "Connected AP BSSID:", "SCAN BEGIN"))

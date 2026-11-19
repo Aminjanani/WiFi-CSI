@@ -30,6 +30,8 @@ A successful join reports `wifi=ready`. Check for an increasing frame count or a
 
 ## 02 · Record independent sessions
 
+Between trials, type `SCAN` in the logger or serial monitor for one passive 2.4 GHz scan. Each result gives a BSSID, channel, RSSI in dBm and SSID. The current CSI source carries `source=1`. The receiver pauses CSI during the scan and restores its previous capture state afterward.
+
 Replace `COM13` with your port. This example gives you 20 seconds after the first valid packet to leave the room, then measures for 90 seconds and stops automatically. The raw file includes the settling period. The labeled dataset starts afterward. Use a longer delay if leaving and closing the door takes longer.
 
 ```powershell

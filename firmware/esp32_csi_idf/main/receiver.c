@@ -185,6 +185,40 @@ static void join_network(char *args)
     puts("WIFI SAVED");
 }
 
+static void scan_networks(void)
+{
+    const bool was_paused = paused;
+    paused = true;
+    update_gate();
+    puts("SCAN BEGIN");
+    wifi_scan_config_t config = {.scan_type = WIFI_SCAN_TYPE_PASSIVE, .show_hidden = true};
+    esp_err_t err = esp_wifi_scan_start(&config, true);
+    uint16_t count = 0;
+    if (err == ESP_OK) {
+        err = esp_wifi_scan_get_ap_num(&count);
+        for (uint16_t i = 0; err == ESP_OK && i < count; ++i) {
+            wifi_ap_record_t ap;
+            err = esp_wifi_scan_get_ap_record(&ap);
+            if (err != ESP_OK) break;
+            char name[4 * 32 + 1] = {0};
+            size_t n = 0;
+            for (size_t j = 0; j < 32 && ap.ssid[j]; ++j) {
+                unsigned c = ap.ssid[j];
+                if (c >= 32 && c <= 126 && c != '\\') name[n++] = (char)c;
+                else n += snprintf(name + n, sizeof(name) - n, "\\x%02x", c);
+            }
+            printf("AP " MACSTR " channel=%u rssi=%d source=%d ssid=%s\n",
+                   MAC2STR(ap.bssid), ap.primary, ap.rssi,
+                   ready && memcmp(ap.bssid, source_mac, sizeof(source_mac)) == 0,
+                   n ? name : "<hidden>");
+        }
+        if (err != ESP_OK) esp_wifi_clear_ap_list();
+    }
+    printf("SCAN END %s count=%u\n", esp_err_to_name(err), count);
+    paused = was_paused;
+    update_gate();
+}
+
 static void command(char *line)
 {
     if (!strcasecmp(line, "STATUS")) {
@@ -199,10 +233,12 @@ static void command(char *line)
         paused = !strcasecmp(line, "STOP");
         update_gate();
         puts(paused ? "CSI capture STOPPED." : "CSI capture STARTED.");
+    } else if (!strcasecmp(line, "SCAN")) {
+        scan_networks();
     } else if (!strncmp(line, "JOIN ", 5)) {
         join_network(line + 5);
     } else if (*line) {
-        puts("Unknown command. Use START, STOP or STATUS.");
+        puts("Unknown command. Use START, STOP, STATUS or SCAN.");
     }
 }
 
@@ -259,7 +295,7 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_wifi_get_config(WIFI_IF_STA, &saved));
     configured = saved.sta.ssid[0] != 0;
     reconnect = configured;
-    puts("ESP32 Router-based CSI receiver (ESP-IDF). USB commands: STATUS, START, STOP.");
+    puts("ESP32 Router-based CSI receiver (ESP-IDF). USB commands: STATUS, START, STOP, SCAN.");
     if (!configured) puts("Set Wi-Fi with python -m src.data_collection.configure_wifi --port PORT");
 
     for (;;) {
