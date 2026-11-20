@@ -40,6 +40,7 @@ uint8_t routerBssid[6] = {0};
 uint32_t csiSequence = 0;
 volatile uint32_t droppedFrames = 0;
 volatile uint32_t oversizedFrames = 0;
+volatile bool csiCaptureEnabled = false;
 
 // Continuous ICMP ping session to the router's default gateway
 esp_ping_handle_t pingHandle = nullptr;
@@ -66,9 +67,6 @@ bool connectWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   wifiManager.setDebugOutput(true);
-
-  // Clear previously saved Wi-Fi credentials
-  wifiManager.resetSettings();
 
   // If saved credentials cannot connect, allow the user to configure Wi-Fi.
   wifiManager.setConnectTimeout(20);
@@ -100,7 +98,7 @@ bool connectWiFi() {
 // Keep this callback short: copy the received CSI into a FreeRTOS queue only.
 // The callback filters frames by the BSSID of the connected router.
 void csiReceiveCallback(void *context, wifi_csi_info_t *info) {
-  if (info == nullptr || info->buf == nullptr || csiQueue == nullptr) {
+  if (!csiCaptureEnabled || info == nullptr || info->buf == nullptr || csiQueue == nullptr) {
     return;
   }
 
@@ -125,6 +123,9 @@ void csiReceiveCallback(void *context, wifi_csi_info_t *info) {
 
   memcpy(frame.bytes, info->buf, frame.length);
 
+  // STOP may have been received while this callback was copying the frame.
+  if (!csiCaptureEnabled) return;
+
   if (xQueueSend(csiQueue, &frame, 0) != pdTRUE) {
     droppedFrames++;
   }
@@ -142,6 +143,13 @@ bool initializeCSI() {
   }
 
   memcpy(routerBssid, apInfo.bssid, sizeof(routerBssid));
+
+  // The pilot dataset uses the classic ESP32 20 MHz LLTF subcarrier layout.
+  err = esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT20);
+  if (err != ESP_OK) {
+    Serial.printf("Could not select 20 MHz bandwidth: %s\n", esp_err_to_name(err));
+    return false;
+  }
 
   Serial.print("Connected AP BSSID: ");
   printMacAddress(routerBssid);
@@ -181,6 +189,7 @@ bool initializeCSI() {
     return false;
   }
 
+  csiCaptureEnabled = true;
   Serial.println("CSI receiver enabled.");
   return true;
 }
@@ -236,6 +245,94 @@ void stopRouterPing() {
   }
 }
 
+// Enable/disable CSI capture without disconnecting from the access point.
+void setCsiCapture(bool enable) {
+  if (enable == csiCaptureEnabled) {
+    Serial.printf("CSI capture is already %s.\n", enable ? "RUNNING" : "STOPPED");
+    return;
+  }
+
+  if (enable) {
+    esp_err_t err = esp_wifi_set_csi(true);
+    if (err != ESP_OK) {
+      Serial.printf("Could not start CSI: %s\n", esp_err_to_name(err));
+      return;
+    }
+    csiCaptureEnabled = true;
+    Serial.println("CSI capture STARTED.");
+  } else {
+    // Block new callback records first, then disable CSI at the Wi-Fi driver.
+    csiCaptureEnabled = false;
+    esp_err_t err = esp_wifi_set_csi(false);
+    if (err != ESP_OK) {
+      Serial.printf("Warning: esp_wifi_set_csi(false): %s\n", esp_err_to_name(err));
+    }
+
+    // Discard records captured before STOP so they are not printed after START.
+    if (csiQueue != nullptr) {
+      xQueueReset(csiQueue);
+    }
+    Serial.println("CSI capture STOPPED. Wi-Fi connection and router ping remain active.");
+  }
+}
+
+void printStatus() {
+  Serial.println("----- STATUS -----");
+  Serial.printf("Wi-Fi: %s\n", WiFi.status() == WL_CONNECTED ? "CONNECTED" : "DISCONNECTED");
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("IP: ");
+    Serial.println(WiFi.localIP());
+    Serial.print("Gateway: ");
+    Serial.println(WiFi.gatewayIP());
+    Serial.print("AP BSSID: ");
+    printMacAddress(routerBssid);
+    Serial.println();
+  }
+  Serial.printf("CSI session: %s\n", csiSessionActive ? "READY" : "NOT READY");
+  Serial.printf("CSI capture: %s\n", csiCaptureEnabled ? "RUNNING" : "STOPPED");
+  Serial.printf("Dropped frames: %lu\n", (unsigned long)droppedFrames);
+  Serial.printf("Oversized frames: %lu\n", (unsigned long)oversizedFrames);
+  Serial.println("------------------");
+}
+
+// Read newline-terminated commands without blocking the CSI processing loop.
+void handleSerialCommands() {
+  static char command[24];
+  static size_t commandLength = 0;
+
+  while (Serial.available() > 0) {
+    const char ch = (char)Serial.read();
+    if (ch == '\r') continue;
+
+    if (ch == '\n') {
+      command[commandLength] = '\0';
+      for (size_t i = 0; i < commandLength; ++i) {
+        if (command[i] >= 'a' && command[i] <= 'z') command[i] -= ('a' - 'A');
+      }
+
+      if (strcmp(command, "STOP") == 0) {
+        setCsiCapture(false);
+      } else if (strcmp(command, "START") == 0) {
+        if (WiFi.status() == WL_CONNECTED && csiSessionActive) {
+          setCsiCapture(true);
+        } else {
+          Serial.println("Cannot START: Wi-Fi/CSI session is not ready yet.");
+        }
+      } else if (strcmp(command, "STATUS") == 0) {
+        printStatus();
+      } else if (commandLength > 0) {
+        Serial.println("Unknown command. Use START, STOP, or STATUS.");
+      }
+      commandLength = 0;
+    } else if (commandLength < sizeof(command) - 1) {
+      command[commandLength++] = ch;
+    } else {
+      commandLength = 0;
+      Serial.println("Command too long. Use START, STOP, or STATUS.");
+    }
+  }
+}
+
 // Print one captured CSI record as CSV to Serial Monitor / Serial Plotter log.
 // Data bytes are kept as signed decimal values, separated by semicolons.
 void printCsiFrame(const CsiFrame &frame) {
@@ -285,15 +382,19 @@ void setup() {
 
   Serial.println("CSV format:");
   Serial.println("CSI,sequence,rx_timestamp_us,rssi,noise_floor,channel,len,first_word_invalid,\"csi_bytes\"");
+  Serial.println("Serial commands: START | STOP | STATUS (send with newline)");
 }
 
 void loop() {
+  handleSerialCommands();
   const unsigned long now = millis();
 
   // Recover Wi-Fi using the credentials previously saved by WiFiManager.
   if (WiFi.status() != WL_CONNECTED) {
     if (csiSessionActive) {
+      csiCaptureEnabled = false;
       esp_wifi_set_csi(false);
+      if (csiQueue != nullptr) xQueueReset(csiQueue);
       stopRouterPing();
       csiSessionActive = false;
       Serial.println("Wi-Fi lost. CSI/ping session paused.");
@@ -313,6 +414,7 @@ void loop() {
       if (startRouterPing()) {
         csiSessionActive = true;
       } else {
+        csiCaptureEnabled = false;
         esp_wifi_set_csi(false);
         delay(1000);
       }
@@ -323,7 +425,7 @@ void loop() {
 
   // Do all printing outside the Wi-Fi CSI callback.
   CsiFrame frame;
-  while (csiQueue != nullptr && xQueueReceive(csiQueue, &frame, 0) == pdTRUE) {
+  while (csiCaptureEnabled && csiQueue != nullptr && xQueueReceive(csiQueue, &frame, 0) == pdTRUE) {
     printCsiFrame(frame);
   }
 
