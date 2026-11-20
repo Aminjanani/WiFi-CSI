@@ -6,6 +6,11 @@ import time
 
 import serial
 
+if __package__:
+    from .serial_capture import open_board
+else:
+    from serial_capture import open_board
+
 
 def wait_status(port, timeout, ready=False):
     deadline = time.monotonic() + timeout
@@ -25,13 +30,15 @@ def wait_status(port, timeout, ready=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", required=True)
+    parser.add_argument("--ssid", help="Router name, including exact spacing and capitalization")
     args = parser.parse_args()
-    ssid = input("2.4 GHz router SSID: ").encode("utf8")
-    password = getpass("Router password (hidden, Enter for an open network): ").encode("utf8")
+    name = args.ssid if args.ssid is not None else input("2.4 GHz router SSID: ")
+    ssid = name.encode("utf8")
+    password = getpass(f"Password for {name} (hidden, Enter for an open network): ").encode("utf8")
     if not 1 <= len(ssid) <= 32 or len(password) > 64 or b"\0" in ssid + password:
         parser.error("expected a 1-32 byte SSID and up to 64 password bytes, without NUL")
     try:
-        with serial.Serial(args.port, 115200, timeout=0.25, write_timeout=2) as port:
+        with open_board(args.port, 921600, timeout=0.25, write_timeout=2) as port:
             if not wait_status(port, 12):
                 parser.exit(1, "Receiver did not identify as IDF-CSI. Check the firmware and port.\n")
             port.write(f"JOIN {ssid.hex()} {password.hex()}\n".encode("ascii"))

@@ -16,10 +16,12 @@
 #include "nvs_flash.h"
 #include "ping/ping_sock.h"
 
-enum { MAX_CSI = 384, COMMAND_CAPACITY = 208 };
+// Ping every 15 ms. Measured ~100 CSI frames/s from the AP, which needs the 921600 baud console.
+enum { MAX_CSI = 384, COMMAND_CAPACITY = 208, PING_INTERVAL_MS = 15 };
 typedef struct {
     uint32_t generation, seq, us;
     int rssi, noise, channel;
+    unsigned sig_mode, rate, mcs, cwb, stbc, sig_len;  // frame format: CSI shape differs between formats
     unsigned length, invalid;
     int8_t iq[MAX_CSI];
 } frame_t;
@@ -62,6 +64,12 @@ static void on_csi(void *ctx, wifi_csi_info_t *info)
     f.rssi = info->rx_ctrl.rssi;
     f.noise = info->rx_ctrl.noise_floor;
     f.channel = info->rx_ctrl.channel;
+    f.sig_mode = info->rx_ctrl.sig_mode;
+    f.rate = info->rx_ctrl.rate;
+    f.mcs = info->rx_ctrl.mcs;
+    f.cwb = info->rx_ctrl.cwb;
+    f.stbc = info->rx_ctrl.stbc;
+    f.sig_len = info->rx_ctrl.sig_len;
     f.invalid = info->first_word_invalid;
     f.length = info->len;
     memcpy(f.iq, info->buf, f.length);
@@ -112,8 +120,8 @@ static esp_err_t start_link(uint32_t gateway)
     esp_ping_config_t config = ESP_PING_DEFAULT_CONFIG();
     ip_addr_set_ip4_u32(&config.target_addr, gateway);
     config.count = ESP_PING_COUNT_INFINITE;
-    config.interval_ms = 100;
-    config.timeout_ms = 100;
+    config.interval_ms = PING_INTERVAL_MS;
+    config.timeout_ms = 50;
     config.data_size = 1;
     esp_ping_callbacks_t callbacks = {0};
     ESP_RETURN_ON_ERROR(esp_ping_new_session(&config, &callbacks, &ping), "csi", "create ping");
@@ -131,8 +139,10 @@ static void print_frame(const frame_t *f)
 {
     // One stdout transaction prevents log messages from splitting a CSV record.
     static char line[128 + 5 * MAX_CSI];
-    int n = snprintf(line, sizeof(line), "CSI,%" PRIu32 ",%" PRIu32 ",%d,%d,%d,%u,%u,\"",
-                     f->seq, f->us, f->rssi, f->noise, f->channel, f->length, f->invalid);
+    // CSI,seq,us,rssi,noise,channel,sig_mode,rate,mcs,cwb,stbc,sig_len,len,first_word_invalid,"iq"
+    int n = snprintf(line, sizeof(line), "CSI,%" PRIu32 ",%" PRIu32 ",%d,%d,%d,%u,%u,%u,%u,%u,%u,%u,%u,\"",
+                     f->seq, f->us, f->rssi, f->noise, f->channel, f->sig_mode, f->rate, f->mcs,
+                     f->cwb, f->stbc, f->sig_len, f->length, f->invalid);
     for (unsigned i = 0; i < f->length; ++i) {
         n += snprintf(line + n, sizeof(line) - n, "%d%c", f->iq[i], i+1 == f->length ? '"' : ';');
     }
